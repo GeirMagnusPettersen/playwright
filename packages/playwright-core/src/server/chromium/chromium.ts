@@ -92,10 +92,10 @@ export class Chromium extends BrowserType {
     const wsEndpoint = await urlToWSEndpoint(progress, endpointURL, headersMap);
     const chromeTransport = await WebSocketTransport.connect(progress, wsEndpoint, { headers: headersMap });
     const closeAndWait = async () => await chromeTransport.closeAndWait();
-    return this._connectOverCDPImpl(progress, chromeTransport, closeAndWait, options, onClose);
+    return this._connectOverCDPImpl(progress, chromeTransport, closeAndWait, options, onClose, endpointURL);
   }
 
-  private async _connectOverCDPImpl(progress: Progress, transport: ConnectionTransport, closeAndWait: () => Promise<void>, options: types.LaunchOptions & { isLocal?: boolean }, onClose?: () => Promise<void>) {
+  private async _connectOverCDPImpl(progress: Progress, transport: ConnectionTransport, closeAndWait: () => Promise<void>, options: types.LaunchOptions & { isLocal?: boolean }, onClose?: () => Promise<void>, endpointURL?: string) {
     const artifactsDir = await progress.race(fs.promises.mkdtemp(ARTIFACTS_FOLDER));
     const doCleanup = async () => {
       await removeFolders([artifactsDir]);
@@ -127,6 +127,28 @@ export class Chromium extends BrowserType {
       };
       validateBrowserContextOptions(persistent, browserOptions);
       const browser = await progress.race(CRBrowser.connect(this.attribution.playwright, transport, browserOptions));
+
+      // Health check: verify the CDP target is responsive (not an orphaned WebView2 process).
+      // Orphaned msedgewebview2 processes hold the CDP port but don't respond to commands,
+      // causing browser_click/browser_hover to timeout with misleading "visible and stable" errors.
+      try {
+        const pages = browser.contexts()[0]?.pages() || [];
+        if (pages.length > 0) {
+          const mainFrame = pages[0].mainFrame();
+          await Promise.race([
+            mainFrame.evaluateExpression('1+1', { world: 'main' }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('CDP health check timeout')), 3000)),
+          ]);
+        }
+      } catch (healthError) {
+        await doClose().catch(() => {});
+        throw new Error(
+          `CDP target on ${endpointURL} is unresponsive (health check failed: ${(healthError as Error).message}). ` +
+          `This usually means an orphaned msedgewebview2 process is holding the port. ` +
+          `Fix: kill all processes listening on this port, then relaunch the target app and reconnect.\n` +
+          `  PowerShell: Get-NetTCPConnection -LocalPort <port> -State Listen | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }`
+        );
+      }
       if (!options.isLocal)
         browser._isCollocatedWithServer = false;
       browser.on(Browser.Events.Disconnected, doCleanup);

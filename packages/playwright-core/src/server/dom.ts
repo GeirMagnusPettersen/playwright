@@ -320,7 +320,14 @@ export class ElementHandle<T extends Node = Node> extends js.JSHandle<T> {
       if (result === 'error:notvisible') {
         if (options.force || noAutoWaiting)
           throw new NonRecoverableDOMError('Element is not visible');
-        progress.log('  element is not visible');
+        if (retry >= 3) {
+          // After multiple retries, add diagnostic hint about common WebView2 issues.
+          progress.log('  element is not visible — if this persists, check:');
+          progress.log('    - Is the WebView2 window in foreground? (orphaned msedgewebview2 processes can hold the CDP port)');
+          progress.log('    - Was browser_resize/setViewportSize called? (permanently breaks WebView2 layout)');
+        } else {
+          progress.log('  element is not visible');
+        }
         continue;
       }
       if (result === 'error:notinviewport') {
