@@ -63,6 +63,16 @@ const screenshot = defineTabTool({
 
     // Bring the page to foreground before capturing. This ensures correct
     // colors and rendering — background WebView2 windows render dark/black.
+    // bringToFront() activates a visible page but doesn't restore hidden/
+    // suspended companion app windows. Use CDP to restore the window state.
+    try {
+      const cdpSession = await tab.page.context().newCDPSession(tab.page);
+      const { windowId } = await cdpSession.send('Browser.getWindowForTarget');
+      await cdpSession.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } });
+      await cdpSession.detach();
+    } catch {
+      // Non-CDP targets or unsupported — fall through to bringToFront
+    }
     await tab.page.bringToFront().catch(() => {});
 
     let data: Buffer;
