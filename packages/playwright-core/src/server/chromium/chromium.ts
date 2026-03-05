@@ -90,6 +90,28 @@ export class Chromium extends BrowserType {
       headersMap['User-Agent'] = getUserAgent();
 
     const wsEndpoint = await urlToWSEndpoint(progress, endpointURL, headersMap);
+
+    // Warn if the CDP endpoint returns multiple debuggable targets — this often
+    // indicates orphaned msedgewebview2 processes from a previously killed app.
+    try {
+      const url = new URL(endpointURL);
+      if (!url.pathname.endsWith('/'))
+        url.pathname += '/';
+      url.pathname += 'json';
+      const targetsJson = await fetchData(progress, { url: url.toString(), headers: headersMap }, async () => undefined as any).catch(() => '[]');
+      if (targetsJson) {
+        const targets = JSON.parse(targetsJson);
+        const pageTargets = targets.filter((t: any) => t.type === 'page');
+        if (pageTargets.length > 1) {
+          const errorTargets = pageTargets.filter((t: any) => t.url?.startsWith('chrome-error://'));
+          if (errorTargets.length > 0)
+            progress.log(`<ws warning> CDP endpoint has ${pageTargets.length} page targets (${errorTargets.length} are chrome-error:// pages). This may indicate orphaned WebView2 processes.`);
+        }
+      }
+    } catch {
+      // Non-fatal — proceed with connection
+    }
+
     const chromeTransport = await WebSocketTransport.connect(progress, wsEndpoint, { headers: headersMap });
     const closeAndWait = async () => await chromeTransport.closeAndWait();
     return this._connectOverCDPImpl(progress, chromeTransport, closeAndWait, options, onClose, endpointURL);
