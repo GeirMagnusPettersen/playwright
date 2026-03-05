@@ -61,6 +61,10 @@ const screenshot = defineTabTool({
     const screenshotTarget = params.ref ? params.element || 'element' : (params.fullPage ? 'full page' : 'viewport');
     const ref = params.ref ? await tab.refLocator({ element: params.element || '', ref: params.ref }) : null;
 
+    // Bring the page to foreground before capturing. This ensures correct
+    // colors and rendering — background WebView2 windows render dark/black.
+    await tab.page.bringToFront().catch(() => {});
+
     let data: Buffer;
     data = ref ? await ref.locator.screenshot(options) : await tab.page.screenshot(options);
 
