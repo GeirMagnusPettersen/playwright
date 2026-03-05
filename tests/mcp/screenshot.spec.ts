@@ -373,6 +373,72 @@ test('browser_take_screenshot (fullPage with element should error)', async ({ st
   expect(result.content?.[0]?.text).toContain('fullPage cannot be used with element screenshots');
 });
 
+test('browser_take_screenshot (clip)', async ({ startClient, server, mcpBrowser }, testInfo) => {
+  test.skip(!['chrome', 'msedge', 'chromium'].includes(mcpBrowser ?? ''), 'Non-chrome may have different viewport sizes');
+
+  const { client } = await startClient({
+    config: { outputDir: testInfo.outputPath('output') },
+  });
+
+  server.setContent('/', `<body style="width: 800px; height: 600px; background: linear-gradient(red, blue); margin: 0;"></body>`, 'text/html');
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+
+  const result = await client.callTool({
+    name: 'browser_take_screenshot',
+    arguments: {
+      clip: { x: 100, y: 100, width: 200, height: 150 },
+    },
+  });
+
+  expect(result.isError).toBeFalsy();
+  const png = PNG.sync.read(Buffer.from(result.content?.[1]?.data, 'base64'));
+  expect(png.width).toBe(200);
+  expect(png.height).toBe(150);
+  expect(result.content?.[0]?.text).toContain('clip region');
+});
+
+test('browser_take_screenshot (clip with element should error)', async ({ startClient, server }, testInfo) => {
+  const { client } = await startClient({
+    config: { outputDir: testInfo.outputPath('output') },
+  });
+  expect(await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.HELLO_WORLD },
+  })).toHaveResponse({
+    snapshot: expect.stringContaining(`[ref=e1]`),
+  });
+
+  const result = await client.callTool({
+    name: 'browser_take_screenshot',
+    arguments: {
+      clip: { x: 0, y: 0, width: 100, height: 100 },
+      element: 'hello button',
+      ref: 'e1',
+    },
+  });
+
+  expect(result.isError).toBe(true);
+  expect(result.content?.[0]?.text).toContain('clip cannot be used with element screenshots');
+});
+
+test('browser_take_screenshot (clip with fullPage should error)', async ({ startClient, server }, testInfo) => {
+  const { client } = await startClient({
+    config: { outputDir: testInfo.outputPath('output') },
+  });
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.HELLO_WORLD } });
+
+  const result = await client.callTool({
+    name: 'browser_take_screenshot',
+    arguments: {
+      clip: { x: 0, y: 0, width: 100, height: 100 },
+      fullPage: true,
+    },
+  });
+
+  expect(result.isError).toBe(true);
+  expect(result.content?.[0]?.text).toContain('clip cannot be used with fullPage screenshots');
+});
+
 test('browser_take_screenshot (viewport without snapshot)', async ({ startClient, server }, testInfo) => {
   const { client } = await startClient({
     config: { outputDir: testInfo.outputPath('output') },

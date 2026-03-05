@@ -29,6 +29,12 @@ const screenshotSchema = z.object({
   element: z.string().optional().describe('Human-readable element description used to obtain permission to screenshot the element. If not provided, the screenshot will be taken of viewport. If element is provided, ref must be provided too.'),
   ref: z.string().optional().describe('Exact target element reference from the page snapshot. If not provided, the screenshot will be taken of viewport. If ref is provided, element must be provided too.'),
   fullPage: z.boolean().optional().describe('When true, takes a screenshot of the full scrollable page, instead of the currently visible viewport. Cannot be used with element screenshots.'),
+  clip: z.object({
+    x: z.number().describe('x-coordinate of the top-left corner of the clip area'),
+    y: z.number().describe('y-coordinate of the top-left corner of the clip area'),
+    width: z.number().describe('Width of the clip area in pixels'),
+    height: z.number().describe('Height of the clip area in pixels'),
+  }).optional().describe('Clip the screenshot to a specific region of the page. Cannot be used with element or fullPage screenshots.'),
 });
 
 const screenshot = defineTabTool({
@@ -44,6 +50,10 @@ const screenshot = defineTabTool({
   handle: async (tab, params, response) => {
     if (params.fullPage && params.ref)
       throw new Error('fullPage cannot be used with element screenshots.');
+    if (params.clip && params.ref)
+      throw new Error('clip cannot be used with element screenshots.');
+    if (params.clip && params.fullPage)
+      throw new Error('clip cannot be used with fullPage screenshots.');
 
     const fileType = params.type || 'png';
     const options: playwright.PageScreenshotOptions = {
@@ -51,10 +61,11 @@ const screenshot = defineTabTool({
       quality: fileType === 'png' ? undefined : 90,
       scale: 'css',
       ...tab.actionTimeoutOptions,
-      ...(params.fullPage !== undefined && { fullPage: params.fullPage })
+      ...(params.fullPage !== undefined && { fullPage: params.fullPage }),
+      ...(params.clip && { clip: params.clip }),
     };
 
-    const screenshotTarget = params.ref ? params.element || 'element' : (params.fullPage ? 'full page' : 'viewport');
+    const screenshotTarget = params.ref ? params.element || 'element' : params.clip ? `clip region (${params.clip.x},${params.clip.y} ${params.clip.width}x${params.clip.height})` : (params.fullPage ? 'full page' : 'viewport');
     const ref = params.ref ? await tab.refLocator({ element: params.element || '', ref: params.ref }) : null;
     const data = ref ? await ref.locator.screenshot(options) : await tab.page.screenshot(options);
 
