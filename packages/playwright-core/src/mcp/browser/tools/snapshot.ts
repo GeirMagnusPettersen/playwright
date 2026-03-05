@@ -46,6 +46,7 @@ const clickSchema = elementSchema.extend({
   doubleClick: z.boolean().optional().describe('Whether to perform a double click instead of a single click'),
   button: z.enum(['left', 'right', 'middle']).optional().describe('Button to click, defaults to left'),
   modifiers: z.array(z.enum(['Alt', 'Control', 'ControlOrMeta', 'Meta', 'Shift'])).optional().describe('Modifier keys to press'),
+  force: z.boolean().optional().describe('Whether to bypass actionability checks (visible, stable, receives events). Use when the element is obscured by tooltips, overlays, or the WebView2 window is in background.'),
 });
 
 const click = defineTabTool({
@@ -65,6 +66,7 @@ const click = defineTabTool({
     const options = {
       button: params.button,
       modifiers: params.modifiers,
+      force: params.force,
       ...tab.actionTimeoutOptions,
     };
     const optionsArg = formatObjectOrVoid(options);
@@ -120,7 +122,9 @@ const hover = defineTabTool({
     name: 'browser_hover',
     title: 'Hover mouse',
     description: 'Hover over element on page',
-    inputSchema: elementSchema,
+    inputSchema: elementSchema.extend({
+      force: z.boolean().optional().describe('Whether to bypass actionability checks (visible, stable, receives events). Use when the WebView2 window is in background.'),
+    }),
     type: 'input',
   },
 
@@ -128,10 +132,14 @@ const hover = defineTabTool({
     response.setIncludeSnapshot();
 
     const { locator, resolved } = await tab.refLocator(params);
+    const options = {
+      force: params.force,
+      ...tab.actionTimeoutOptions,
+    };
     response.addCode(`await page.${resolved}.hover();`);
 
     await tab.waitForCompletion(async () => {
-      await locator.hover(tab.actionTimeoutOptions);
+      await locator.hover(options);
     });
   },
 });
