@@ -78,7 +78,6 @@ const connect = defineTool({
       const url = page.url();
 
       response.addTextResult(`Connected to ${endpoint}\nPage: ${title}\nURL: ${url.slice(0, 80)}`);
-      response.setIncludeSnapshot();
     } catch (error) {
       response.addError(
         `Failed to connect to ${endpoint}: ${(error as Error).message}\n\n` +
