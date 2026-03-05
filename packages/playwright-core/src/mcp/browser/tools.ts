@@ -16,6 +16,7 @@
 
 import common from './tools/common';
 import config from './tools/config';
+import connect from './tools/connect';
 import console from './tools/console';
 import cookies from './tools/cookies';
 import devtools from './tools/devtools';
@@ -48,6 +49,7 @@ import type { ContextConfig } from './context';
 export const browserTools: Tool<any>[] = [
   ...common,
   ...config,
+  ...connect,
   ...console,
   ...cookies,
   ...devtools,

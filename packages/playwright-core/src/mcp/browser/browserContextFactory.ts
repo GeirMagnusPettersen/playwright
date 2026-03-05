@@ -100,6 +100,16 @@ class BaseContextFactory implements BrowserContextFactory {
   protected async _doCreateContext(browser: playwright.Browser, clientInfo: ClientInfo): Promise<playwright.BrowserContext> {
     throw new Error('Not implemented');
   }
+
+  async switchEndpoint(newEndpoint: string): Promise<void> {
+    testDebug(`switching CDP endpoint to ${newEndpoint} (${this._logName})`);
+    (this.config as any).browser.cdpEndpoint = newEndpoint;
+    if (this._browserPromise) {
+      const browser = await this._browserPromise.catch(() => undefined);
+      this._browserPromise = undefined;
+      await browser?.close().catch(() => {});
+    }
+  }
 }
 
 class IsolatedContextFactory extends BaseContextFactory {
