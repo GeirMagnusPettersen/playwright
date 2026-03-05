@@ -57,15 +57,24 @@ const connect = defineTool({
 
       // Step 3: Get or create a page
       const pages = browserContext.pages();
-      const page = pages.find(p => !p.url().startsWith('chrome-error://') && !p.url().includes('sw.js'))
-        || pages[0];
+      let page = pages[0];
+      for (const p of pages) {
+        try {
+          const pUrl = p.url();
+          if (!pUrl.startsWith('chrome-error://') && !pUrl.includes('sw.js')) {
+            page = p;
+            break;
+          }
+        } catch {
+          // Skip pages that error on url()
+        }
+      }
 
       if (!page)
         throw new Error('No pages found on new endpoint');
 
-      // Step 4: Update the context's internal state by creating a new tab
-      // We use evaluate to verify connectivity
-      const title = await page.title();
+      // Step 4: Verify connectivity
+      const title = await page.title().catch(() => 'Unknown');
       const url = page.url();
 
       response.addTextResult(`Connected to ${endpoint}\nPage: ${title}\nURL: ${url.slice(0, 80)}`);
