@@ -51,6 +51,17 @@ const resize = defineTabTool({
   },
 
   handle: async (tab, params, response) => {
+    // Block setViewportSize on CDP-connected WebView2 targets — it permanently
+    // breaks the host's native viewport control. Layout corrupts and doesn't recover.
+    const browser = tab.page.context().browser();
+    if (browser && !(browser as any)._isCollocatedWithServer) {
+      response.addError(
+        'Error: browser_resize is not supported for CDP-connected targets (e.g., WebView2).\n' +
+        'setViewportSize permanently breaks the host\'s viewport control.\n' +
+        'Use Win32 MoveWindow to resize the native window instead.'
+      );
+      return;
+    }
     response.addCode(`await page.setViewportSize({ width: ${params.width}, height: ${params.height} });`);
     await tab.page.setViewportSize({ width: params.width, height: params.height });
   },
