@@ -73,6 +73,9 @@ export type CLIOptions = {
   testIdAttribute?: string;
   timeoutAction?: number;
   timeoutNavigation?: number;
+  forcedColors?: 'active' | 'none';
+  colorScheme?: 'dark' | 'light' | 'no-preference';
+  reducedMotion?: 'no-preference' | 'reduce';
   userAgent?: string;
   userDataDir?: string;
   viewportSize?: ViewportSize;
@@ -236,6 +239,15 @@ export function configFromCLIOptions(cliOptions: CLIOptions): Config & { configF
 
   if (cliOptions.grantPermissions)
     contextOptions.permissions = cliOptions.grantPermissions;
+
+  if (cliOptions.forcedColors)
+    contextOptions.forcedColors = cliOptions.forcedColors;
+
+  if (cliOptions.colorScheme)
+    contextOptions.colorScheme = cliOptions.colorScheme;
+
+  if (cliOptions.reducedMotion)
+    contextOptions.reducedMotion = cliOptions.reducedMotion;
 
   const config: Config = {
     browser: {
