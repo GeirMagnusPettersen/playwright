@@ -60,7 +60,29 @@ const screenshot = defineTabTool({
 
     const screenshotTarget = params.ref ? params.element || 'element' : (params.fullPage ? 'full page' : 'viewport');
     const ref = params.ref ? await tab.refLocator({ element: params.element || '', ref: params.ref }) : null;
-    const data = ref ? await ref.locator.screenshot(options) : await tab.page.screenshot(options);
+
+    let data: Buffer;
+    try {
+      data = ref ? await ref.locator.screenshot(options) : await tab.page.screenshot(options);
+    } catch (screenshotError) {
+      // Fallback: use CDP Page.captureScreenshot which works without foreground.
+      // This is common on WebView2 where the window is in background.
+      if (!ref) {
+        try {
+          const cdpSession = await tab.page.context().newCDPSession(tab.page);
+          const result = await cdpSession.send('Page.captureScreenshot', {
+            format: fileType === 'jpeg' ? 'jpeg' : 'png',
+            quality: fileType === 'jpeg' ? 90 : undefined,
+          });
+          data = Buffer.from(result.data, 'base64');
+          await cdpSession.detach();
+        } catch {
+          throw screenshotError; // re-throw original if CDP fallback also fails
+        }
+      } else {
+        throw screenshotError; // element screenshots can't use CDP fallback
+      }
+    }
 
     const resolvedFile = await response.resolveClientFile({ prefix: ref ? 'element' : 'page', ext: fileType, suggestedFilename: params.filename }, `Screenshot of ${screenshotTarget}`);
 
