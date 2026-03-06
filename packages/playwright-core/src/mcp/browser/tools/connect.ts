@@ -55,29 +55,16 @@ const connect = defineTool({
       if (!browserContext)
         throw new Error('No browser context available on new endpoint');
 
-      // Step 3: Get or create a page
-      const pages = browserContext.pages();
-      let page = pages[0];
-      for (const p of pages) {
-        try {
-          const pUrl = p.url();
-          if (!pUrl.startsWith('chrome-error://') && !pUrl.includes('sw.js')) {
-            page = p;
-            break;
-          }
-        } catch {
-          // Skip pages that error on url()
-        }
-      }
+      // Step 3: Reset the MCP context with the new browser context
+      await context.resetWithBrowserContext(browserContext);
 
-      if (!page)
-        throw new Error('No pages found on new endpoint');
-
-      // Step 4: Verify connectivity
-      const title = await page.title().catch(() => 'Unknown');
-      const url = page.url();
+      // Step 4: Verify we have a page
+      const tab = context.currentTab();
+      const title = tab ? await tab.page.title().catch(() => 'Unknown') : 'No page';
+      const url = tab ? tab.page.url() : 'N/A';
 
       response.addTextResult(`Connected to ${endpoint}\nPage: ${title}\nURL: ${url.slice(0, 80)}`);
+      response.setIncludeFullSnapshot();
     } catch (error) {
       response.addError(
         `Failed to connect to ${endpoint}: ${(error as Error).message}\n\n` +

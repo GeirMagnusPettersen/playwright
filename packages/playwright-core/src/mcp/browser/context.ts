@@ -115,6 +115,17 @@ export class Context {
     await this.stopVideoRecording();
   }
 
+  async resetWithBrowserContext(browserContext: playwright.BrowserContext) {
+    // Clear old tabs without disposing (old browser is already closed)
+    this._tabs.length = 0;
+    this._currentTab = undefined;
+    this._browserContextPromise = undefined;
+    this._rawBrowserContext = browserContext;
+    // Re-initialize: discover existing pages on the new context
+    this._browserContextPromise = this._initializeBrowserContext();
+    await this._browserContextPromise;
+  }
+
   tabs(): Tab[] {
     return this._tabs;
   }
