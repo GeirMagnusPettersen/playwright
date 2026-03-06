@@ -16,7 +16,6 @@
 
 import fs from 'fs';
 import path from 'path';
-import { jpegjs } from '../../../utilsBundle';
 import { z } from '../../../mcpBundle';
 import { defineTabTool } from './tool';
 
@@ -89,28 +88,22 @@ const screenCapture = defineTabTool({
     const framesDir = path.join(process.env.TEMP || '/tmp', `pw-capture-${timestamp}`);
     fs.mkdirSync(framesDir, { recursive: true });
 
-    // Capture frames using CDP Page.captureScreenshot for speed
-    const cdp = await tab.page.context().newCDPSession(tab.page);
+    // Capture frames using Playwright's page.screenshot() — NOT CDP
+    // Page.captureScreenshot. WebView2 companion apps have a transparent
+    // background surface; page.screenshot() handles this correctly while
+    // CDP captureScreenshot renders black backgrounds.
     const frames: string[] = [];
     const startTime = Date.now();
 
     response.addCode(`// Capturing ${totalFrames} frames at ${fps}fps for ${duration}ms`);
 
-    // Use Page.captureScreenshot in a loop. CDP screencast only sends frames
-    // on visual change, which doesn't work for pre-scheduled transitions.
-    // JPEG format with optimizeForSpeed gives ~100-200ms per frame on WebView2.
     for (let i = 0; i < totalFrames; i++) {
       const elapsed = Date.now() - startTime;
       if (elapsed > duration + 500) break;
 
       try {
-        const { data } = await cdp.send('Page.captureScreenshot', {
-          format: 'jpeg',
-          quality: 80,
-          optimizeForSpeed: true,
-        });
-        const framePath = path.join(framesDir, `frame-${String(i).padStart(4, '0')}.jpg`);
-        fs.writeFileSync(framePath, Buffer.from(data, 'base64'));
+        const framePath = path.join(framesDir, `frame-${String(i).padStart(4, '0')}.png`);
+        await tab.page.screenshot({ type: 'png', path: framePath });
         frames.push(framePath);
       } catch {
         // Skip failed frames
@@ -123,8 +116,6 @@ const screenCapture = defineTabTool({
         await new Promise(r => globalThis.setTimeout(r, waitTime));
     }
 
-    await cdp.detach();
-
     if (frames.length === 0)
       throw new Error('No frames were captured.');
 
@@ -134,19 +125,21 @@ const screenCapture = defineTabTool({
       return;
     }
 
-    // Stitch frames into GIF using Node.js (gif-encoder-2)
-    // Screencast frames are JPEG — decode with canvas or sharp
+    // Stitch frames into GIF using Node.js (gif-encoder-2 + pngjs)
+    // WebView2 renders with transparent background — alpha-composite
+    // each frame onto white before encoding to GIF.
     const gifFilename = params.filename || `transition-${timestamp}.gif`;
     const resolvedFile = await response.resolveClientFile({ prefix: 'transition', ext: 'gif', suggestedFilename: gifFilename }, 'Animated transition capture');
     const gifPath = resolvedFile.absoluteName || path.resolve(gifFilename);
 
     try {
       const GIFEncoder = require('gif-encoder-2');
+      const { PNG } = require('pngjs');
 
       // Read first frame for dimensions
-      const firstJpeg = jpegjs.decode(fs.readFileSync(frames[0]), { maxMemoryUsageInMB: 512 });
-      const width = firstJpeg.width;
-      const height = firstJpeg.height;
+      const firstPng = PNG.sync.read(fs.readFileSync(frames[0]));
+      const width = firstPng.width;
+      const height = firstPng.height;
 
       const encoder = new GIFEncoder(width, height);
       encoder.setDelay(Math.round(frameInterval));
@@ -154,8 +147,16 @@ const screenCapture = defineTabTool({
       encoder.start();
 
       for (const framePath of frames) {
-        const jpeg = jpegjs.decode(fs.readFileSync(framePath), { maxMemoryUsageInMB: 512 });
-        encoder.addFrame(jpeg.data);
+        const png = PNG.sync.read(fs.readFileSync(framePath));
+        // Alpha-composite onto white background
+        for (let i = 0; i < png.data.length; i += 4) {
+          const a = png.data[i + 3] / 255;
+          png.data[i] = Math.round(png.data[i] * a + 255 * (1 - a));
+          png.data[i + 1] = Math.round(png.data[i + 1] * a + 255 * (1 - a));
+          png.data[i + 2] = Math.round(png.data[i + 2] * a + 255 * (1 - a));
+          png.data[i + 3] = 255;
+        }
+        encoder.addFrame(png.data);
       }
 
       encoder.finish();
