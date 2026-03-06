@@ -69,15 +69,20 @@ const screenshot = defineTabTool({
       const cdpSession = await tab.page.context().newCDPSession(tab.page);
       const { windowId } = await cdpSession.send('Browser.getWindowForTarget');
       await cdpSession.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } });
+      await cdpSession.detach();
 
       // Use PowerShell to find the host window via the WebView2 process tree
       // and bring it to foreground with Win32 SetForegroundWindow.
       if (process.platform === 'win32') {
         try {
           const { execSync } = require('child_process');
-          // Get the browser target's PID via CDP
-          const result = await cdpSession.send('SystemInfo.getProcessInfo').catch(() => null);
+          // SystemInfo.getProcessInfo requires a browser-level CDP session
+          const browser = tab.page.context().browser();
+          const browserSession = browser ? await (browser as any).newBrowserCDPSession() : null;
+          const result = browserSession ? await browserSession.send('SystemInfo.getProcessInfo').catch(() => null) : null;
           const wv2Pid = result?.processInfo?.[0]?.id;
+          if (browserSession)
+            await browserSession.detach().catch(() => {});
           if (wv2Pid) {
             // Find WebView2's parent process (the host app) and activate its window
             execSync(
@@ -96,8 +101,6 @@ const screenshot = defineTabTool({
           // PowerShell not available or failed — continue without foreground
         }
       }
-
-      await cdpSession.detach();
     } catch {
       // Non-CDP targets or unsupported — fall through to bringToFront
     }
