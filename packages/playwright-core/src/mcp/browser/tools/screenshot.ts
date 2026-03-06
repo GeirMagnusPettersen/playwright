@@ -70,24 +70,31 @@ const screenshot = defineTabTool({
       const { windowId } = await cdpSession.send('Browser.getWindowForTarget');
       await cdpSession.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } });
 
-      // Use CDP Runtime to call Win32 focus via PowerShell — this actually
-      // brings the window to the foreground on the Windows desktop.
-      try {
-        const title = await tab.page.title();
-        if (title && process.platform === 'win32') {
-          const { exec } = require('child_process');
-          await new Promise<void>((resolve) => {
-            exec(
-              `powershell -NoProfile -Command "Add-Type @\\\"\\nusing System;\\nusing System.Runtime.InteropServices;\\npublic class PW { [DllImport(\\\"user32.dll\\\")] public static extern IntPtr FindWindow(string c, string t); [DllImport(\\\"user32.dll\\\")] public static extern bool ShowWindow(IntPtr h, int c); [DllImport(\\\"user32.dll\\\")] public static extern bool SetForegroundWindow(IntPtr h); }\\n\\\"@; $h = [PW]::FindWindow($null, '${title.replace(/'/g, "''")}'); [PW]::ShowWindow($h, 9); [PW]::SetForegroundWindow($h)"`,
-              { timeout: 3000 },
-              () => resolve()
+      // Use PowerShell to find the host window via the WebView2 process tree
+      // and bring it to foreground with Win32 SetForegroundWindow.
+      if (process.platform === 'win32') {
+        try {
+          const { execSync } = require('child_process');
+          // Get the browser target's PID via CDP
+          const result = await cdpSession.send('SystemInfo.getProcessInfo').catch(() => null);
+          const wv2Pid = result?.processInfo?.[0]?.id;
+          if (wv2Pid) {
+            // Find WebView2's parent process (the host app) and activate its window
+            execSync(
+              `powershell -NoProfile -Command "` +
+              `$ppid = (Get-CimInstance Win32_Process -Filter 'ProcessId=${wv2Pid}' -EA SilentlyContinue).ParentProcessId; ` +
+              `if (-not $ppid) { exit }; ` +
+              `$h = (Get-Process -Id $ppid -EA SilentlyContinue).MainWindowHandle; ` +
+              `if (-not $h -or $h -eq 0) { exit }; ` +
+              `Add-Type -Name WF -Namespace U32 -MemberDefinition '[DllImport(\\\"user32.dll\\\")] public static extern bool ShowWindow(IntPtr h, int c); [DllImport(\\\"user32.dll\\\")] public static extern bool SetForegroundWindow(IntPtr h);' -EA SilentlyContinue; ` +
+              `[U32.WF]::ShowWindow([IntPtr]$h, 9); [U32.WF]::SetForegroundWindow([IntPtr]$h)"`,
+              { timeout: 5000, stdio: 'ignore' }
             );
-          });
-          // Give Windows time to render the newly-focused window
+          }
           await new Promise(r => setTimeout(r, 500));
+        } catch {
+          // PowerShell not available or failed — continue without foreground
         }
-      } catch {
-        // PowerShell not available — fall through
       }
 
       await cdpSession.detach();
