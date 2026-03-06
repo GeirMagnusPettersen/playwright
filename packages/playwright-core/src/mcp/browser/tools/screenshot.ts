@@ -61,14 +61,35 @@ const screenshot = defineTabTool({
     const screenshotTarget = params.ref ? params.element || 'element' : (params.fullPage ? 'full page' : 'viewport');
     const ref = params.ref ? await tab.refLocator({ element: params.element || '', ref: params.ref }) : null;
 
-    // Bring the page to foreground before capturing. This ensures correct
-    // colors and rendering — background WebView2 windows render dark/black.
-    // bringToFront() activates a visible page but doesn't restore hidden/
-    // suspended companion app windows. Use CDP to restore the window state.
+    // Bring the page to foreground before capturing. WebView2 companion apps
+    // suspend rendering when not in foreground, causing screenshot to hang.
+    // CDP Browser.setWindowBounds restores minimized state but doesn't activate
+    // the window on the Windows desktop. We need both: CDP restore + Win32 focus.
     try {
       const cdpSession = await tab.page.context().newCDPSession(tab.page);
       const { windowId } = await cdpSession.send('Browser.getWindowForTarget');
       await cdpSession.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } });
+
+      // Use CDP Runtime to call Win32 focus via PowerShell — this actually
+      // brings the window to the foreground on the Windows desktop.
+      try {
+        const title = await tab.page.title();
+        if (title && process.platform === 'win32') {
+          const { exec } = require('child_process');
+          await new Promise<void>((resolve) => {
+            exec(
+              `powershell -NoProfile -Command "Add-Type @\\\"\\nusing System;\\nusing System.Runtime.InteropServices;\\npublic class PW { [DllImport(\\\"user32.dll\\\")] public static extern IntPtr FindWindow(string c, string t); [DllImport(\\\"user32.dll\\\")] public static extern bool ShowWindow(IntPtr h, int c); [DllImport(\\\"user32.dll\\\")] public static extern bool SetForegroundWindow(IntPtr h); }\\n\\\"@; $h = [PW]::FindWindow($null, '${title.replace(/'/g, "''")}'); [PW]::ShowWindow($h, 9); [PW]::SetForegroundWindow($h)"`,
+              { timeout: 3000 },
+              () => resolve()
+            );
+          });
+          // Give Windows time to render the newly-focused window
+          await new Promise(r => setTimeout(r, 500));
+        }
+      } catch {
+        // PowerShell not available — fall through
+      }
+
       await cdpSession.detach();
     } catch {
       // Non-CDP targets or unsupported — fall through to bringToFront
