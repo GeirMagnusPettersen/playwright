@@ -84,15 +84,18 @@ const screenshot = defineTabTool({
           if (browserSession)
             await browserSession.detach().catch(() => {});
           if (wv2Pid) {
-            // Find WebView2's parent process (the host app) and activate its window
+            // Find WebView2's parent process (the host app) and activate its window.
+            // Some MSIX apps have MainWindowHandle=0, so fall back to FindWindow
+            // using the parent process name (e.g., "Calendar", "Files", "People").
             execSync(
               `powershell -NoProfile -Command "` +
+              `Add-Type -Name WF -Namespace U32 -MemberDefinition '[DllImport(\\\"user32.dll\\\")] public static extern IntPtr FindWindow(string c, string t); [DllImport(\\\"user32.dll\\\")] public static extern bool ShowWindow(IntPtr h, int c); [DllImport(\\\"user32.dll\\\")] public static extern bool SetForegroundWindow(IntPtr h);' -EA SilentlyContinue; ` +
               `$ppid = (Get-CimInstance Win32_Process -Filter 'ProcessId=${wv2Pid}' -EA SilentlyContinue).ParentProcessId; ` +
               `if (-not $ppid) { exit }; ` +
-              `$h = (Get-Process -Id $ppid -EA SilentlyContinue).MainWindowHandle; ` +
-              `if (-not $h -or $h -eq 0) { exit }; ` +
-              `Add-Type -Name WF -Namespace U32 -MemberDefinition '[DllImport(\\\"user32.dll\\\")] public static extern bool ShowWindow(IntPtr h, int c); [DllImport(\\\"user32.dll\\\")] public static extern bool SetForegroundWindow(IntPtr h);' -EA SilentlyContinue; ` +
-              `[U32.WF]::ShowWindow([IntPtr]$h, 9); [U32.WF]::SetForegroundWindow([IntPtr]$h)"`,
+              `$proc = Get-Process -Id $ppid -EA SilentlyContinue; ` +
+              `$h = $proc.MainWindowHandle; ` +
+              `if (-not $h -or $h -eq 0) { $h = [U32.WF]::FindWindow([NullString]::Value, $proc.ProcessName) }; ` +
+              `if ($h -and $h -ne 0) { [U32.WF]::ShowWindow([IntPtr]$h, 9); [U32.WF]::SetForegroundWindow([IntPtr]$h) }"`,
               { timeout: 5000, stdio: 'ignore' }
             );
           }
