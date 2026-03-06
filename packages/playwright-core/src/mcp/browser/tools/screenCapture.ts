@@ -126,45 +126,68 @@ const screenCapture = defineTabTool({
       return;
     }
 
-    // Stitch frames into GIF using Python + Pillow
+    // Stitch frames into GIF using Node.js (gif-encoder-2 + pngjs)
     const gifFilename = params.filename || `transition-${timestamp}.gif`;
     const resolvedFile = await response.resolveClientFile({ prefix: 'transition', ext: 'gif', suggestedFilename: gifFilename }, 'Animated transition capture');
     const gifPath = resolvedFile.absoluteName || path.resolve(gifFilename);
 
     try {
-      const { execSync } = require('child_process');
-      // Use inline Python to create GIF — avoids dependency on external script
-      const pyScript = `
-import glob, sys
-from PIL import Image
-frames = sorted(glob.glob(sys.argv[1] + '/frame-*.png'))
-if not frames: sys.exit(1)
-imgs = [Image.open(f) for f in frames]
-# Scale down if too large
-w, h = imgs[0].size
-if w > 800:
-    scale = 800 / w
-    imgs = [im.resize((int(w*scale), int(h*scale)), Image.LANCZOS) for im in imgs]
-imgs[0].save(sys.argv[2], save_all=True, append_images=imgs[1:], duration=${Math.round(frameInterval)}, loop=0, optimize=True)
-print(f'GIF: {len(frames)} frames, {sys.argv[2]}')
-`.trim();
-      execSync(`python -c "${pyScript.replace(/"/g, '\\"').replace(/\n/g, ';')}" "${framesDir}" "${gifPath}"`, {
-        timeout: 30000,
-        stdio: 'pipe'
-      });
+      const { PNG } = require('pngjs');
+      const GIFEncoder = require('gif-encoder-2');
 
-      // Read the GIF and add as file result
-      const gifData = fs.readFileSync(gifPath);
+      // Read first frame for dimensions
+      const firstPng = PNG.sync.read(fs.readFileSync(frames[0]));
+      let width = firstPng.width;
+      let height = firstPng.height;
+
+      // Scale down if too large (> 800px wide)
+      const scale = width > 800 ? 800 / width : 1;
+      if (scale < 1) {
+        width = Math.round(width * scale);
+        height = Math.round(height * scale);
+      }
+
+      const encoder = new GIFEncoder(width, height);
+      encoder.setDelay(Math.round(frameInterval));
+      encoder.setRepeat(0);
+      encoder.start();
+
+      for (const framePath of frames) {
+        const png = PNG.sync.read(fs.readFileSync(framePath));
+        if (scale < 1) {
+          // Simple nearest-neighbor downscale
+          const scaled = Buffer.alloc(width * height * 4);
+          for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+              const srcX = Math.floor(x / scale);
+              const srcY = Math.floor(y / scale);
+              const srcIdx = (srcY * png.width + srcX) * 4;
+              const dstIdx = (y * width + x) * 4;
+              scaled[dstIdx] = png.data[srcIdx];
+              scaled[dstIdx + 1] = png.data[srcIdx + 1];
+              scaled[dstIdx + 2] = png.data[srcIdx + 2];
+              scaled[dstIdx + 3] = png.data[srcIdx + 3];
+            }
+          }
+          encoder.addFrame(scaled);
+        } else {
+          encoder.addFrame(png.data);
+        }
+      }
+
+      encoder.finish();
+      const gifData = encoder.out.getData();
+      fs.writeFileSync(gifPath, gifData);
       await response.addFileResult(resolvedFile, gifData);
-      response.addTextResult(`Captured ${frames.length} frames in ${Date.now() - startTime}ms → ${gifPath}`);
+      response.addTextResult(`Captured ${frames.length} frames in ${Date.now() - startTime}ms → ${gifPath} (${Math.round(gifData.length / 1024)}KB)`);
     } catch (error) {
-      // Python/Pillow not available — fall back to returning frames
+      // GIF encoding failed — fall back to returning frames directory
       response.addTextResult(
         `Captured ${frames.length} frames in ${Date.now() - startTime}ms\n` +
-        `GIF encoding failed (Python + Pillow required): ${(error as Error).message}\n` +
-        `Frames saved to: ${framesDir}\n` +
-        `Manual stitch: python -c "from PIL import Image; import glob; imgs=[Image.open(f) for f in sorted(glob.glob('${framesDir.replace(/\\/g, '/')}/frame-*.png'))]; imgs[0].save('${gifPath.replace(/\\/g, '/')}', save_all=True, append_images=imgs[1:], duration=${Math.round(frameInterval)}, loop=0)"`
+        `GIF encoding failed: ${(error as Error).message}\n` +
+        `Frames saved to: ${framesDir}`
       );
+      return; // Don't cleanup frames if GIF failed
     }
 
     // Cleanup frames
