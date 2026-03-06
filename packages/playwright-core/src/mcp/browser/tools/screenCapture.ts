@@ -16,6 +16,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { jpegjs } from '../../../utilsBundle';
 import { z } from '../../../mcpBundle';
 import { defineTabTool } from './tool';
 
@@ -95,26 +96,41 @@ const screenCapture = defineTabTool({
 
     response.addCode(`// Capturing ${totalFrames} frames at ${fps}fps for ${duration}ms`);
 
-    for (let i = 0; i < totalFrames; i++) {
-      const elapsed = Date.now() - startTime;
-      if (elapsed > duration + 500) break; // safety margin
+    // Use CDP Page.startScreencast for async frame streaming — much faster
+    // than individual Page.captureScreenshot calls for capturing animations.
+    let frameCount = 0;
+    const framePromise = new Promise<void>((resolve) => {
+      const timeout = setTimeout(() => resolve(), duration + 1000);
 
-      try {
-        const { data } = await cdp.send('Page.captureScreenshot', { format: 'png', optimizeForSpeed: true });
-        const framePath = path.join(framesDir, `frame-${String(i).padStart(4, '0')}.png`);
-        fs.writeFileSync(framePath, Buffer.from(data, 'base64'));
-        frames.push(framePath);
-      } catch {
-        // Skip failed frames
-      }
+      cdp.on('Page.screencastFrame', async (event: any) => {
+        try {
+          await cdp.send('Page.screencastFrameAck', { sessionId: event.sessionId });
+          const framePath = path.join(framesDir, `frame-${String(frameCount).padStart(4, '0')}.png`);
+          // Screencast sends JPEG; save as-is (GIF encoder handles both)
+          fs.writeFileSync(framePath, Buffer.from(event.data, 'base64'));
+          frames.push(framePath);
+          frameCount++;
+        } catch {
+          // Skip failed frames
+        }
 
-      // Wait for next frame interval
-      const nextFrameTime = startTime + (i + 1) * frameInterval;
-      const waitTime = nextFrameTime - Date.now();
-      if (waitTime > 0)
-        await new Promise(r => setTimeout(r, waitTime));
-    }
+        if (Date.now() - startTime >= duration) {
+          clearTimeout(timeout);
+          resolve();
+        }
+      });
+    });
 
+    await cdp.send('Page.startScreencast', {
+      format: 'jpeg',
+      quality: 80,
+      maxWidth: 800,
+      maxHeight: 1200,
+      everyNthFrame: Math.max(1, Math.round(60 / fps)), // Throttle to target fps
+    });
+
+    await framePromise;
+    await cdp.send('Page.stopScreencast').catch(() => {});
     await cdp.detach();
 
     if (frames.length === 0)
@@ -126,26 +142,19 @@ const screenCapture = defineTabTool({
       return;
     }
 
-    // Stitch frames into GIF using Node.js (gif-encoder-2 + pngjs)
+    // Stitch frames into GIF using Node.js (gif-encoder-2)
+    // Screencast frames are JPEG — decode with canvas or sharp
     const gifFilename = params.filename || `transition-${timestamp}.gif`;
     const resolvedFile = await response.resolveClientFile({ prefix: 'transition', ext: 'gif', suggestedFilename: gifFilename }, 'Animated transition capture');
     const gifPath = resolvedFile.absoluteName || path.resolve(gifFilename);
 
     try {
-      const { PNG } = require('pngjs');
       const GIFEncoder = require('gif-encoder-2');
 
       // Read first frame for dimensions
-      const firstPng = PNG.sync.read(fs.readFileSync(frames[0]));
-      let width = firstPng.width;
-      let height = firstPng.height;
-
-      // Scale down if too large (> 800px wide)
-      const scale = width > 800 ? 800 / width : 1;
-      if (scale < 1) {
-        width = Math.round(width * scale);
-        height = Math.round(height * scale);
-      }
+      const firstJpeg = jpegjs.decode(fs.readFileSync(frames[0]), { maxMemoryUsageInMB: 512 });
+      const width = firstJpeg.width;
+      const height = firstJpeg.height;
 
       const encoder = new GIFEncoder(width, height);
       encoder.setDelay(Math.round(frameInterval));
@@ -153,26 +162,8 @@ const screenCapture = defineTabTool({
       encoder.start();
 
       for (const framePath of frames) {
-        const png = PNG.sync.read(fs.readFileSync(framePath));
-        if (scale < 1) {
-          // Simple nearest-neighbor downscale
-          const scaled = Buffer.alloc(width * height * 4);
-          for (let y = 0; y < height; y++) {
-            for (let x = 0; x < width; x++) {
-              const srcX = Math.floor(x / scale);
-              const srcY = Math.floor(y / scale);
-              const srcIdx = (srcY * png.width + srcX) * 4;
-              const dstIdx = (y * width + x) * 4;
-              scaled[dstIdx] = png.data[srcIdx];
-              scaled[dstIdx + 1] = png.data[srcIdx + 1];
-              scaled[dstIdx + 2] = png.data[srcIdx + 2];
-              scaled[dstIdx + 3] = png.data[srcIdx + 3];
-            }
-          }
-          encoder.addFrame(scaled);
-        } else {
-          encoder.addFrame(png.data);
-        }
+        const jpeg = jpegjs.decode(fs.readFileSync(framePath), { maxMemoryUsageInMB: 512 });
+        encoder.addFrame(jpeg.data);
       }
 
       encoder.finish();
