@@ -33,6 +33,7 @@ import pdf from './tools/pdf';
 import route from './tools/route';
 import runCode from './tools/runCode';
 import reconnect from './tools/reconnect';
+import screenCapture from './tools/screenCapture';
 import scroll from './tools/scroll';
 import snapshot from './tools/snapshot';
 import screenshot from './tools/screenshot';
@@ -67,6 +68,7 @@ export const browserTools: Tool<any>[] = [
   ...route,
   ...runCode,
   ...reconnect,
+  ...screenCapture,
   ...scroll,
   ...screenshot,
   ...snapshot,
