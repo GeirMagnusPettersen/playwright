@@ -96,41 +96,33 @@ const screenCapture = defineTabTool({
 
     response.addCode(`// Capturing ${totalFrames} frames at ${fps}fps for ${duration}ms`);
 
-    // Use CDP Page.startScreencast for async frame streaming — much faster
-    // than individual Page.captureScreenshot calls for capturing animations.
-    let frameCount = 0;
-    const framePromise = new Promise<void>((resolve) => {
-      const timeout = setTimeout(() => resolve(), duration + 1000);
+    // Use Page.captureScreenshot in a loop. CDP screencast only sends frames
+    // on visual change, which doesn't work for pre-scheduled transitions.
+    // JPEG format with optimizeForSpeed gives ~100-200ms per frame on WebView2.
+    for (let i = 0; i < totalFrames; i++) {
+      const elapsed = Date.now() - startTime;
+      if (elapsed > duration + 500) break;
 
-      cdp.on('Page.screencastFrame', async (event: any) => {
-        try {
-          await cdp.send('Page.screencastFrameAck', { sessionId: event.sessionId });
-          const framePath = path.join(framesDir, `frame-${String(frameCount).padStart(4, '0')}.png`);
-          // Screencast sends JPEG; save as-is (GIF encoder handles both)
-          fs.writeFileSync(framePath, Buffer.from(event.data, 'base64'));
-          frames.push(framePath);
-          frameCount++;
-        } catch {
-          // Skip failed frames
-        }
+      try {
+        const { data } = await cdp.send('Page.captureScreenshot', {
+          format: 'jpeg',
+          quality: 80,
+          optimizeForSpeed: true,
+        });
+        const framePath = path.join(framesDir, `frame-${String(i).padStart(4, '0')}.jpg`);
+        fs.writeFileSync(framePath, Buffer.from(data, 'base64'));
+        frames.push(framePath);
+      } catch {
+        // Skip failed frames
+      }
 
-        if (Date.now() - startTime >= duration) {
-          clearTimeout(timeout);
-          resolve();
-        }
-      });
-    });
+      // Wait for next frame interval
+      const nextFrameTime = startTime + (i + 1) * frameInterval;
+      const waitTime = nextFrameTime - Date.now();
+      if (waitTime > 0)
+        await new Promise(r => globalThis.setTimeout(r, waitTime));
+    }
 
-    await cdp.send('Page.startScreencast', {
-      format: 'jpeg',
-      quality: 80,
-      maxWidth: 800,
-      maxHeight: 1200,
-      everyNthFrame: Math.max(1, Math.round(60 / fps)), // Throttle to target fps
-    });
-
-    await framePromise;
-    await cdp.send('Page.stopScreencast').catch(() => {});
     await cdp.detach();
 
     if (frames.length === 0)
