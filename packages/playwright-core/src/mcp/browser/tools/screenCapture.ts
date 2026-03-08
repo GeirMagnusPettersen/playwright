@@ -24,6 +24,7 @@ const screenCaptureSchema = z.object({
   fps: z.number().default(10).describe('Frames per second to capture (default: 10). Higher = smoother but larger file. 10 is good for 250ms animations, 20 for fast transitions.'),
   filename: z.string().optional().describe('Output GIF filename. Defaults to transition-{timestamp}.gif'),
   format: z.enum(['gif', 'frames']).default('gif').describe('Output format: "gif" produces an animated GIF (requires Python + Pillow), "frames" saves numbered PNGs to a directory.'),
+  reloadAfterMs: z.number().optional().describe('Trigger location.reload() after this many ms of capture. Use to capture reload transitions (content→blank→shimmer→content).'),
 });
 
 const screenCapture = defineTabTool({
@@ -43,6 +44,7 @@ const screenCapture = defineTabTool({
     const frameInterval = 1000 / fps;
     const totalFrames = Math.ceil(duration / frameInterval);
     const format = params.format;
+    const reloadAfterMs = params.reloadAfterMs;
 
     // Bring window to foreground first (reuse screenshot's activation logic)
     try {
@@ -92,22 +94,82 @@ const screenCapture = defineTabTool({
     // Page.captureScreenshot. WebView2 companion apps have a transparent
     // background surface; page.screenshot() handles this correctly while
     // CDP captureScreenshot renders black backgrounds.
+    //
+    // Browser-level CDP fallback: when page.screenshot() fails (e.g., during
+    // navigation), fall back to CDP Target.captureScreenshot via the browser
+    // session. This survives page navigations that kill the page reference.
     const frames: string[] = [];
     const startTime = Date.now();
+    let currentPage = tab.page;
+    let consecutiveErrors = 0;
+
+    // Create browser-level CDP session for fallback screenshots
+    let browserCdp: any = null;
+    try {
+      browserCdp = await currentPage.context().newCDPSession(currentPage);
+    } catch {
+      // Can't create CDP session — will rely on page.screenshot() only
+    }
 
     response.addCode(`// Capturing ${totalFrames} frames at ${fps}fps for ${duration}ms`);
 
+    let reloadTriggered = false;
     for (let i = 0; i < totalFrames; i++) {
       const elapsed = Date.now() - startTime;
       if (elapsed > duration + 500) break;
 
-      try {
-        const framePath = path.join(framesDir, `frame-${String(i).padStart(4, '0')}.png`);
-        await tab.page.screenshot({ type: 'png', path: framePath });
-        frames.push(framePath);
-      } catch {
-        // Skip failed frames
+      // Trigger reload at specified time (inside the loop so capture is already running)
+      if (reloadAfterMs && !reloadTriggered && elapsed >= reloadAfterMs) {
+        reloadTriggered = true;
+        currentPage.evaluate(() => location.reload()).catch(() => {});
       }
+
+      const framePath = path.join(framesDir, `frame-${String(i).padStart(4, '0')}.png`);
+      let captured = false;
+
+      // Try 1: page.screenshot() (preferred — handles transparency)
+      try {
+        await currentPage.screenshot({ type: 'png', path: framePath, timeout: 500 });
+        frames.push(framePath);
+        captured = true;
+        consecutiveErrors = 0;
+      } catch {
+        // page.screenshot() failed — try to re-acquire page
+        try {
+          const pages = currentPage.context().pages();
+          if (pages.length > 0) {
+            currentPage = pages[pages.length - 1];
+            // Retry with new page — no waitForLoadState (too slow during reload)
+            await currentPage.screenshot({ type: 'png', path: framePath, timeout: 500 });
+            frames.push(framePath);
+            captured = true;
+            consecutiveErrors = 0;
+          }
+        } catch {
+          // Page re-acquisition failed too
+        }
+      }
+
+      // Try 2: CDP fallback (survives navigation but may have black background)
+      if (!captured && browserCdp) {
+        try {
+          const result = await browserCdp.send('Page.captureScreenshot', { format: 'png' });
+          const buf = Buffer.from(result.data, 'base64');
+          fs.writeFileSync(framePath, buf);
+          frames.push(framePath);
+          captured = true;
+          consecutiveErrors = 0;
+        } catch {
+          // Re-create CDP session on failure
+          try {
+            browserCdp = await currentPage.context().newCDPSession(currentPage);
+          } catch { /* give up on CDP for this frame */ }
+          consecutiveErrors++;
+        }
+      }
+
+      if (!captured) consecutiveErrors++;
+      if (consecutiveErrors > 15) break;
 
       // Wait for next frame interval
       const nextFrameTime = startTime + (i + 1) * frameInterval;
